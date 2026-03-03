@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MATRIX_STREAM_v1.0 - Standalone</title>
+    <!-- CDNs for libraries -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/framer-motion@10.16.4/dist/framer-motion.js"></script>
+    <script src="https://unpkg.com/lucide-react@latest/dist/umd/lucide-react.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: black;
+            font-family: 'JetBrains Mono', monospace;
+            color: #22c55e;
+        }
+        canvas {
+            display: block;
+        }
+        .markdown-body {
+            color: inherit;
+        }
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 0.5; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.05); }
+        }
+        .animate-pulse-glow {
+            animation: pulse-glow 2s infinite ease-in-out;
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                }
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback, useMemo } = React;
+        const { motion, AnimatePresence } = Motion;
+        const { Volume2, VolumeX, Play, Trophy } = LucideReact;
+
+        // --- Audio Service (Procedural Sound & Music) ---
+        class AudioService {
+            constructor() {
+                this.context = null;
+                this.masterGain = null;
+                this.analyser = null;
+                this.isMuted = false;
+                this.musicInterval = null;
+                this.styleInterval = null;
+                this.beatCount = 0;
+                this.frequencyData = null;
+                this.currentStyle = 'TECHNO';
+                this.isBossActive = false;
+            }
+
+            init() {
+                if (this.context) return;
+                this.context = new (window.AudioContext || window.webkitAudioContext)();
+                this.masterGain = this.context.createGain();
+                this.analyser = this.context.createAnalyser();
+                this.analyser.fftSize = 256;
+                this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
+
+                this.masterGain.connect(this.analyser);
+                this.analyser.connect(this.context.destination);
+                
+                this.masterGain.gain.value = this.isMuted ? 0 : 0.3;
+            }
+
+            setMuted(muted) {
+                this.isMuted = muted;
+                if (this.masterGain) {
+                    this.masterGain.gain.setTargetAtTime(muted ? 0 : 0.3, this.context.currentTime, 0.1);
+                }
+            }
+
+            setBossActive(active) {
+                this.isBossActive = active;
+            }
+
+            resume() {
+                this.init();
+                if (this.context && this.context.state === 'suspended') {
+                    this.context.resume();
+                }
+                this.startMusic();
+                this.startStyleRotation();
+            }
+
+            startStyleRotation() {
+                if (this.styleInterval) return;
+                this.styleInterval = setInterval(() => {
+                    const styles = ['TECHNO', 'INDUSTRIAL', 'AMBIENT'];
+                    const currentIndex = styles.indexOf(this.currentStyle);
+                    this.currentStyle = styles[(currentIndex + 1) % styles.length];
+                }, 30000);
+            }
+
+            playTone(freq, type, duration, volume = 1, slideTo) {
+                if (!this.context || this.isMuted) return;
+
+                const osc = this.context.createOscillator();
+                const gain = this.context.createGain();
+
+                osc.type = type;
+                osc.frequency.setValueAtTime(freq, this.context.currentTime);
+                if (slideTo) {
+                    osc.frequency.exponentialRampToValueAtTime(slideTo, this.context.currentTime + duration);
+                }
+
+                gain.gain.setValueAtTime(volume, this.context.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.context.currentTime + duration);
+
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+
+                osc.start();
+                osc.stop(this.context.currentTime + duration);
+            }
+
+            startMusic() {
+                if (this.musicInterval) return;
+
+                this.musicInterval = setInterval(() => {
+                    if (this.isMuted || !this.context) return;
+
+                    const now = this.context.currentTime;
+                    
+                    if (this.currentStyle === 'TECHNO') {
+                        if (this.beatCount % 4 === 0) this.playKick(now);
+                        if (this.beatCount % 4 === 2) this.playSnare(now);
+                        this.playBass(now, this.beatCount);
+                    } else if (this.currentStyle === 'INDUSTRIAL') {
+                        if (this.beatCount % 2 === 0) this.playKick(now, 100, 0.8);
+                        if (this.beatCount % 4 === 2) this.playNoise(now, 0.2);
+                        this.playBass(now, this.beatCount, 'square');
+                    } else if (this.currentStyle === 'AMBIENT') {
+                        if (this.beatCount % 8 === 0) this.playKick(now, 60, 0.4);
+                        if (this.beatCount % 4 === 0) this.playBass(now, this.beatCount, 'sine', 0.4);
+                    }
+
+                    this.beatCount = (this.beatCount + 1) % 16;
+                }, this.isBossActive ? 100 : 150); 
+            }
+
+            playKick(time, startFreq = 150, volume = 0.8) {
+                const osc = this.context.createOscillator();
+                const gain = this.context.createGain();
+                osc.frequency.setValueAtTime(startFreq, time);
+                osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+                gain.gain.setValueAtTime(volume, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+                osc.start(time);
+                osc.stop(time + 0.5);
+            }
+
+            playSnare(time) {
+                const osc = this.context.createOscillator();
+                const gain = this.context.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(100, time);
+                gain.gain.setValueAtTime(0.3, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+                osc.start(time);
+                osc.stop(time + 0.1);
+            }
+
+            playNoise(time, volume) {
+                const bufferSize = this.context.sampleRate * 0.1;
+                const buffer = this.context.createBuffer(1, bufferSize, this.context.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+                const noise = this.context.createBufferSource();
+                noise.buffer = buffer;
+                const gain = this.context.createGain();
+                gain.gain.setValueAtTime(volume, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
+                noise.connect(gain);
+                gain.connect(this.masterGain);
+                noise.start(time);
+                noise.stop(time + 0.1);
+            }
+
+            playBass(time, beat, type = 'sawtooth', duration = 0.1) {
+                const freqs = this.currentStyle === 'AMBIENT' ? [40, 40, 45, 40] : [55, 55, 65, 55, 55, 55, 82, 55];
+                const freq = freqs[beat % freqs.length];
+                this.playTone(freq, type, duration, 0.15);
+            }
+
+            getBeatIntensity() {
+                if (!this.analyser || !this.frequencyData) return 0;
+                this.analyser.getByteFrequencyData(this.frequencyData);
+                let lowEnergy = 0;
+                for (let i = 0; i < 10; i++) lowEnergy += this.frequencyData[i];
+                return lowEnergy / 10;
+            }
+
+            getFrequencyData() {
+                if (!this.analyser || !this.frequencyData) return new Uint8Array(0);
+                this.analyser.getByteFrequencyData(this.frequencyData);
+                return this.frequencyData;
+            }
+
+            playShoot() { this.playTone(880, 'square', 0.1, 0.1, 440); }
+            playCollision() { this.playTone(150, 'sawtooth', 0.4, 0.4, 40); }
+            playVirusDestroyed() { this.playTone(600, 'sine', 0.05, 0.2); }
+            playPowerUp() {
+                [440, 554.37, 659.25, 880].forEach((f, i) => {
+                    setTimeout(() => this.playTone(f, 'triangle', 0.2, 0.2), i * 100);
+                });
+            }
+            playTrophy() {
+                [523.25, 659.25, 783.99, 1046.50].forEach((f, i) => {
+                    setTimeout(() => this.playTone(f, 'sine', 0.3, 0.3), i * 150);
+                });
+            }
+            playUltimate() {
+                const now = this.context.currentTime;
+                for (let i = 0; i < 10; i++) {
+                    const time = now + i * 0.05;
+                    const freq = 200 + i * 200;
+                    const osc = this.context.createOscillator();
+                    const gain = this.context.createGain();
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(freq, time);
+                    osc.frequency.exponentialRampToValueAtTime(freq * 2, time + 0.2);
+                    gain.gain.setValueAtTime(0.1, time);
+                    gain.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+                    osc.connect(gain);
+                    gain.connect(this.masterGain);
+                    osc.start(time);
+                    osc.stop(time + 0.2);
+                }
+            }
+        }
+
+        const audioService = new AudioService();
+
+        // --- Matrix Rain Component ---
+        const MatrixRain = ({ isBossActive = false }) => {
+            const canvasRef = useRef(null);
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                let width = (canvas.width = window.innerWidth);
+                let height = (canvas.height = window.innerHeight);
+
+                const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789$+-*/=%\"\'#&_(),.;:?!\\|{}<>[]^~';
+                const charArray = characters.split('');
+                const fontSize = 16;
+                const columns = Math.floor(width / fontSize);
+
+                const columnData = Array.from({ length: columns }, () => ({
+                    y: Math.random() * -height,
+                    speed: 1 + Math.random() * 3,
+                    size: 10 + Math.random() * 10,
+                }));
+
+                const draw = () => {
+                    const freqData = audioService.getFrequencyData();
+                    const avgFreq = freqData.length > 0 ? freqData.reduce((a, b) => a + b, 0) / freqData.length : 0;
+                    const bgAlpha = 0.05 + (avgFreq / 255) * 0.1;
+                    ctx.fillStyle = isBossActive ? `rgba(20, 0, 0, ${bgAlpha})` : `rgba(0, 0, 0, ${bgAlpha})`;
+                    ctx.fillRect(0, 0, width, height);
+
+                    columnData.forEach((col, index) => {
+                        ctx.font = `${col.size}px monospace`;
+                        const char = charArray[Math.floor(Math.random() * charArray.length)];
+                        if (isBossActive) {
+                            const redValue = Math.min(255, 150 + avgFreq);
+                            ctx.fillStyle = `rgb(${redValue}, 0, 0)`;
+                            ctx.shadowColor = '#F00';
+                        } else {
+                            const greenValue = Math.min(255, 150 + avgFreq);
+                            ctx.fillStyle = `rgb(0, ${greenValue}, 0)`;
+                            ctx.shadowColor = '#0F0';
+                        }
+                        ctx.shadowBlur = avgFreq / 10;
+                        const x = index * fontSize;
+                        ctx.fillText(char, x, col.y);
+                        ctx.shadowBlur = 0;
+                        const audioSpeedBoost = (avgFreq / 255) * 5;
+                        col.y += col.speed + audioSpeedBoost + (isBossActive ? 2 : 0);
+                        if (col.y > height && Math.random() > 0.975) {
+                            col.y = -col.size;
+                            col.speed = 1 + Math.random() * 3;
+                        }
+                    });
+                    requestAnimationFrame(draw);
+                };
+
+                const handleResize = () => {
+                    width = canvas.width = window.innerWidth;
+                    height = canvas.height = window.innerHeight;
+                };
+
+                window.addEventListener('resize', handleResize);
+                const animationId = requestAnimationFrame(draw);
+                return () => {
+                    window.removeEventListener('resize', handleResize);
+                    cancelAnimationFrame(animationId);
+                };
+            }, [isBossActive]);
+
+            return <canvas ref={canvasRef} className="fixed top-0 left-0 w-full h-full bg-black -z-10" />;
+        };
+
+        // --- Core Code Player Component ---
+        const CoreCodePlayer = ({ 
+            onCollision, onVirusDestroyed, onPowerUpCollected, onBossStatusChange,
+            virusColor = '#FF0000', speedMultiplier = 1, difficultyLevel = 1,
+            ultimateCharges, onUltimateUsed
+        }) => {
+            const canvasRef = useRef(null);
+            const posRef = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+            const keysRef = useRef({});
+            const trailRef = useRef([]);
+            const virusesRef = useRef([]);
+            const projectilesRef = useRef([]);
+            const enemyProjectilesRef = useRef([]);
+            const powerUpsRef = useRef([]);
+            const nextVirusIdRef = useRef(0);
+            const nextProjectileIdRef = useRef(0);
+            const nextEnemyProjectileIdRef = useRef(0);
+            const nextPowerUpIdRef = useRef(0);
+            const firepowerRef = useRef(1);
+            const ultimateChargesRef = useRef(ultimateCharges);
+            const onUltimateUsedRef = useRef(onUltimateUsed);
+            const lastFireTimeRef = useRef(0);
+            const lastBeatSpawnTimeRef = useRef(0);
+            const lastBossSpawnTimeRef = useRef(Date.now());
+            const bossCycleRef = useRef(0);
+            const currentBossStageRef = useRef('HEX');
+            const warningRef = useRef({ active: false, startTime: 0 });
+            const ultimateEffectRef = useRef({ active: false, startTime: 0, lines: [] });
+            
+            const MAX_TRAIL = 15;
+            const SPEED = 12;
+            const VIRUS_SPAWN_CHANCE = 0.05;
+            const BEAT_SPAWN_THRESHOLD = 160;
+            const POWERUP_SPAWN_CHANCE = 0.005;
+            const BOSS_SPAWN_INTERVAL = 45000;
+            const PLAYER_WIDTH = 50;
+            const PLAYER_HEIGHT = 30;
+            const FIRE_RATE = 120;
+            const ENEMY_FIRE_RATE = 2000;
+
+            const virusColorRef = useRef(virusColor);
+            const speedMultiplierRef = useRef(speedMultiplier);
+
+            useEffect(() => {
+                virusColorRef.current = virusColor;
+                speedMultiplierRef.current = speedMultiplier;
+                ultimateChargesRef.current = ultimateCharges;
+                onUltimateUsedRef.current = onUltimateUsed;
+            }, [virusColor, speedMultiplier, ultimateCharges, onUltimateUsed]);
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                let width = (canvas.width = window.innerWidth);
+                let height = (canvas.height = window.innerHeight);
+
+                const handleKeyDown = (e) => {
+                    keysRef.current[e.key] = true;
+                    if (e.key === 'Enter' && ultimateChargesRef.current > 0 && !ultimateEffectRef.current.active) {
+                        console.log("Ultimate Activated!");
+                        onUltimateUsedRef.current();
+                        audioService.playUltimate();
+                        const lines = [];
+                        for (let i = 0; i < 150; i++) {
+                            lines.push({
+                                x: Math.random() * width,
+                                y: height + Math.random() * 1500,
+                                speed: 35 + Math.random() * 45,
+                                text: Math.random() > 0.5 ? "0" : "1"
+                            });
+                        }
+                        ultimateEffectRef.current = { active: true, startTime: Date.now(), lines };
+                    }
+                };
+
+                const handleKeyUp = (e) => { keysRef.current[e.key] = false; };
+                const handleResize = () => {
+                    width = canvas.width = window.innerWidth;
+                    height = canvas.height = window.innerHeight;
+                };
+
+                window.addEventListener('keydown', handleKeyDown);
+                window.addEventListener('keyup', handleKeyUp);
+                window.addEventListener('resize', handleResize);
+
+                const update = () => {
+                    const pos = posRef.current;
+                    let moved = false;
+                    const now = Date.now();
+                    const beatIntensity = audioService.getBeatIntensity();
+
+                    if (keysRef.current['ArrowUp'] || keysRef.current['w']) { pos.y = Math.max(20, pos.y - SPEED); moved = true; }
+                    if (keysRef.current['ArrowDown'] || keysRef.current['s']) { pos.y = Math.min(height - 20, pos.y + SPEED); moved = true; }
+                    if (keysRef.current['ArrowLeft'] || keysRef.current['a']) { pos.x = Math.max(50, pos.x - SPEED); moved = true; }
+                    if (keysRef.current['ArrowRight'] || keysRef.current['d']) { pos.x = Math.min(width - 50, pos.x + SPEED); moved = true; }
+
+                    if (moved) {
+                        trailRef.current.unshift({ ...pos });
+                        if (trailRef.current.length > MAX_TRAIL) trailRef.current.pop();
+                    } else if (trailRef.current.length > 0) {
+                        trailRef.current.pop();
+                    }
+
+                    if (keysRef.current[' '] && now - lastFireTimeRef.current > FIRE_RATE) {
+                        lastFireTimeRef.current = now;
+                        const char = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)];
+                        const level = firepowerRef.current;
+                        audioService.playShoot();
+                        if (level === 1) projectilesRef.current.push({ id: nextProjectileIdRef.current++, x: pos.x, y: pos.y - 20, speed: 12, char });
+                        else if (level === 2) {
+                            projectilesRef.current.push({ id: nextProjectileIdRef.current++, x: pos.x - 10, y: pos.y - 20, speed: 12, char });
+                            projectilesRef.current.push({ id: nextProjectileIdRef.current++, x: pos.x + 10, y: pos.y - 20, speed: 12, char });
+                        } else if (level >= 3) {
+                            projectilesRef.current.push({ id: nextProjectileIdRef.current++, x: pos.x, y: pos.y - 20, speed: 12, char });
+                            projectilesRef.current.push({ id: nextProjectileIdRef.current++, x: pos.x - 20, y: pos.y - 15, speed: 12, char });
+                            projectilesRef.current.push({ id: nextProjectileIdRef.current++, x: pos.x + 20, y: pos.y - 15, speed: 12, char });
+                        }
+                    }
+
+                    const isBossPresent = virusesRef.current.some(v => v.isBoss);
+                    if (onBossStatusChange) onBossStatusChange(isBossPresent);
+                    audioService.setBossActive(isBossPresent);
+
+                    if (!isBossPresent && !warningRef.current.active && now - lastBossSpawnTimeRef.current > BOSS_SPAWN_INTERVAL - 3000) {
+                        warningRef.current = { active: true, startTime: now };
+                    }
+
+                    if (warningRef.current.active && now - warningRef.current.startTime > 3000) {
+                        warningRef.current.active = false;
+                        lastBossSpawnTimeRef.current = now;
+                        const stage = currentBossStageRef.current;
+                        const cycle = bossCycleRef.current;
+                        const hpMultiplier = Math.pow(1.2, cycle);
+                        const speedMultiplierVal = Math.pow(1.1, cycle);
+                        let bossHp = 50 * hpMultiplier;
+                        let char = '【Ω】';
+                        if (stage === 'HEX') { bossHp = 60 * hpMultiplier; char = '0xDEADBEEF'; }
+                        else if (stage === 'WALL') { bossHp = 100 * hpMultiplier; char = '[0][1][0][1][0][1]'; }
+                        else if (stage === 'RING') { bossHp = 80 * hpMultiplier; char = 'while(true)'; }
+                        else if (stage === 'BOMB') { bossHp = 40 * hpMultiplier; char = '10'; }
+
+                        virusesRef.current.push({
+                            id: nextVirusIdRef.current++, x: width / 2, y: -100,
+                            speed: (stage === 'RING' ? 1.5 : 0.5) * speedMultiplierVal * speedMultiplierRef.current,
+                            char, type: 'BOSS', hp: bossHp, maxHp: bossHp, isBoss: true, bossStage: stage, angle: 0,
+                            timer: stage === 'BOMB' ? 10 : 0, lastShotTime: now
+                        });
+
+                        const stages = ['HEX', 'WALL', 'RING', 'BOMB'];
+                        const nextIndex = stages.indexOf(stage) + 1;
+                        if (nextIndex >= stages.length) { bossCycleRef.current++; currentBossStageRef.current = stages[0]; }
+                        else currentBossStageRef.current = stages[nextIndex];
+                    }
+
+                    const isBeat = beatIntensity > BEAT_SPAWN_THRESHOLD && now - lastBeatSpawnTimeRef.current > 150;
+                    if (!isBossPresent && (isBeat || Math.random() < VIRUS_SPAWN_CHANCE)) {
+                        if (isBeat) lastBeatSpawnTimeRef.current = now;
+                        const chars = '0123456789ABCDEF!@#$%^&*';
+                        const rand = Math.random();
+                        let type = 'BASIC';
+                        let speedBase = 2 + Math.random() * 5;
+                        let char = chars[Math.floor(Math.random() * chars.length)];
+                        let hp = 1;
+                        const difficulty = difficultyLevel || 1;
+                        if (rand < 0.05 * difficulty) { type = 'SHOOTER'; char = '⌖'; hp = 2; }
+                        else if (rand < 0.1 * difficulty) { type = 'ELITE'; char = '◈'; hp = 3 + Math.floor(difficulty / 2); speedBase *= 0.8; }
+                        else if (rand < 0.15) { type = 'FAST'; speedBase *= 2; char = '⚡'; }
+                        else if (rand < 0.25) { type = 'ZIGZAG'; char = '〰'; }
+                        else if (rand < 0.35) { type = 'SPLITTER'; char = '◪'; }
+
+                        virusesRef.current.push({
+                            id: nextVirusIdRef.current++, x: Math.random() * width, y: -30,
+                            speed: speedBase * speedMultiplierRef.current, char, type, hp, maxHp: hp, angle: 0, hasSplit: false, lastShotTime: now
+                        });
+                    }
+
+                    if (Math.random() < POWERUP_SPAWN_CHANCE) {
+                        powerUpsRef.current.push({ id: nextPowerUpIdRef.current++, x: Math.random() * width, y: -30, speed: 2, value: Math.floor(Math.random() * 9) + 1 });
+                    }
+
+                    if (ultimateEffectRef.current.active) {
+                        const effect = ultimateEffectRef.current;
+                        effect.lines.forEach(l => { l.y -= l.speed; });
+                        if (now - effect.startTime > 2000) effect.active = false;
+                        virusesRef.current.forEach(v => {
+                            if (v.isBoss) {
+                                v.hp -= 0.5;
+                                if (v.hp <= 0) { onVirusDestroyed(5000); audioService.playTrophy(); }
+                            } else {
+                                v.hp = 0; onVirusDestroyed(50);
+                            }
+                        });
+                        virusesRef.current = virusesRef.current.filter(v => v.hp > 0);
+                    }
+
+                    projectilesRef.current = projectilesRef.current.filter(p => { p.y -= p.speed; return p.y > -50; });
+                    enemyProjectilesRef.current = enemyProjectilesRef.current.filter(p => {
+                        p.y += p.speed;
+                        const hit = p.x > pos.x - PLAYER_WIDTH / 2 && p.x < pos.x + PLAYER_WIDTH / 2 && p.y > pos.y - PLAYER_HEIGHT / 2 && p.y < pos.y + PLAYER_HEIGHT / 2;
+                        if (hit) { onCollision(); return false; }
+                        return p.y < height + 50;
+                    });
+                    powerUpsRef.current = powerUpsRef.current.filter(p => {
+                        p.y += p.speed;
+                        const hit = p.x > pos.x - PLAYER_WIDTH && p.x < pos.x + PLAYER_WIDTH && p.y > pos.y - PLAYER_HEIGHT && p.y < pos.y + PLAYER_HEIGHT;
+                        if (hit) { firepowerRef.current = Math.min(5, firepowerRef.current + 1); onPowerUpCollected(firepowerRef.current); return false; }
+                        return p.y < height + 50;
+                    });
+
+                    const newViruses = [];
+                    virusesRef.current.forEach(v => {
+                        const beatSpeedBoost = (beatIntensity / 255) * 8;
+                        v.y += v.speed + beatSpeedBoost;
+                        if (v.isBoss) {
+                            v.angle = (v.angle || 0) + 0.05;
+                            if (v.bossStage === 'HEX') v.x += Math.sin(v.angle) * 10;
+                            else if (v.bossStage === 'RING') { v.angle += 0.05; v.x += Math.sin(v.angle) * 15; if (v.y > height / 3) v.speed = 8; }
+                            else if (v.bossStage === 'BOMB') { v.speed = 0.2; v.timer = Math.max(0, 10 - (now - (v.lastShotTime || now)) / 1000); v.char = Math.ceil(v.timer).toString(); if (v.timer <= 0) { onCollision(); v.hp = 0; } }
+                            if (now - (v.lastShotTime || 0) > 1000 && v.bossStage !== 'BOMB') {
+                                for (let i = -1; i <= 1; i++) enemyProjectilesRef.current.push({ id: nextEnemyProjectileIdRef.current++, x: v.x + i * 30, y: v.y + 40, speed: 4, char: '▼' });
+                                v.lastShotTime = now;
+                            }
+                        } else if (v.type === 'ZIGZAG') { v.angle = (v.angle || 0) + 0.1; v.x += Math.sin(v.angle) * 5; }
+                        else if (v.type === 'SHOOTER' && now - (v.lastShotTime || 0) > ENEMY_FIRE_RATE) {
+                            v.lastShotTime = now; enemyProjectilesRef.current.push({ id: nextEnemyProjectileIdRef.current++, x: v.x, y: v.y + 20, speed: 5, char: 'v' });
+                        } else if (v.type === 'SPLITTER' && !v.hasSplit && v.y > height / 2) {
+                            v.hasSplit = true;
+                            newViruses.push({ id: nextVirusIdRef.current++, x: v.x - 20, y: v.y, speed: v.speed * 1.2, char: '▫', type: 'FRAGMENT', hp: 1, maxHp: 1 });
+                            newViruses.push({ id: nextVirusIdRef.current++, x: v.x + 20, y: v.y, speed: v.speed * 1.2, char: '▫', type: 'FRAGMENT', hp: 1, maxHp: 1 });
+                        }
+
+                        let destroyedByProjectile = false;
+                        projectilesRef.current = projectilesRef.current.filter(p => {
+                            const dist = Math.hypot(p.x - v.x, p.y - v.y);
+                            const hitRadius = v.isBoss ? (v.bossStage === 'WALL' ? 200 : 80) : 30;
+                            if (dist < hitRadius) {
+                                v.hp -= 1;
+                                if (v.bossStage === 'HEX' && Math.random() < 0.3) newViruses.push({ id: nextVirusIdRef.current++, x: v.x + (Math.random() - 0.5) * 100, y: v.y, speed: 4, char: '0x' + Math.floor(Math.random() * 255).toString(16), type: 'FRAGMENT', hp: 1, maxHp: 1 });
+                                if (v.hp <= 0) { destroyedByProjectile = true; onVirusDestroyed(v.isBoss ? 5000 : 100 * (v.maxHp || 1)); if (v.isBoss) audioService.playTrophy(); }
+                                return false;
+                            }
+                            return true;
+                        });
+
+                        if (destroyedByProjectile) return;
+                        const hit = v.x > pos.x - (v.isBoss && v.bossStage === 'WALL' ? width : PLAYER_WIDTH / 2) && v.x < pos.x + (v.isBoss && v.bossStage === 'WALL' ? width : PLAYER_WIDTH / 2) && v.y > pos.y - PLAYER_HEIGHT / 2 && v.y < pos.y + PLAYER_HEIGHT / 2;
+                        if (hit) onCollision();
+                        else if (v.y < height + 100) newViruses.push(v);
+                    });
+                    virusesRef.current = newViruses;
+                };
+
+                const draw = () => {
+                    ctx.clearRect(0, 0, width, height);
+                    const now = Date.now();
+                    const beatIntensity = audioService.getBeatIntensity();
+                    const coreText = "<<400>>";
+                    ctx.font = "bold 24px 'JetBrains Mono', monospace";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+
+                    ctx.font = "bold 20px 'JetBrains Mono', monospace";
+                    projectilesRef.current.forEach(p => { ctx.fillStyle = '#FFF'; ctx.shadowBlur = 10; ctx.shadowColor = '#FFF'; ctx.fillText(p.char, p.x, p.y); });
+                    ctx.font = "bold 18px 'JetBrains Mono', monospace";
+                    enemyProjectilesRef.current.forEach(p => { ctx.fillStyle = '#F00'; ctx.shadowBlur = 10; ctx.shadowColor = '#F00'; ctx.fillText(p.char, p.x, p.y); });
+                    ctx.font = "bold 32px 'JetBrains Mono', monospace";
+                    powerUpsRef.current.forEach(p => { ctx.fillStyle = '#FFD700'; ctx.shadowBlur = 15; ctx.shadowColor = '#FFD700'; ctx.fillText(p.value.toString(), p.x, p.y); });
+
+                    virusesRef.current.forEach(v => {
+                        const flash = (beatIntensity > 150) || (Math.sin(now / 50) > 0);
+                        if (v.isBoss) {
+                            const bossPulse = Math.sin(now / 100) * 10;
+                            ctx.fillStyle = flash ? '#FF0000' : '#880000';
+                            ctx.shadowBlur = 30 + bossPulse;
+                            ctx.shadowColor = '#FF0000';
+                            if (v.bossStage === 'WALL') { ctx.font = "bold 30px 'JetBrains Mono', monospace"; ctx.fillText("[0][1][0][1][0][1][0][1]", v.x, v.y); }
+                            else if (v.bossStage === 'RING') { ctx.save(); ctx.translate(v.x, v.y); ctx.rotate(now / 200); ctx.font = "bold 40px 'JetBrains Mono', monospace"; ctx.fillText("while(true)", 0, 0); ctx.restore(); }
+                            else if (v.bossStage === 'BOMB') { ctx.font = "bold 120px 'JetBrains Mono', monospace"; ctx.fillText(v.char, v.x, v.y); }
+                            else { ctx.font = "bold 80px 'JetBrains Mono', monospace"; ctx.fillText(v.char, v.x, v.y); }
+                        } else {
+                            ctx.fillStyle = flash ? virusColorRef.current : '#444444';
+                            ctx.shadowBlur = flash ? 15 : 5;
+                            ctx.shadowColor = virusColorRef.current;
+                            let fontSize = 28;
+                            if (v.type === 'SPLITTER' || v.type === 'ELITE') fontSize = 40;
+                            else if (v.type === 'FRAGMENT') fontSize = 18;
+                            else if (v.type === 'FAST' || v.type === 'SHOOTER') fontSize = 32;
+                            ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`;
+                            ctx.fillText(v.char, v.x, v.y);
+                        }
+                        if (v.maxHp > 1) {
+                            const barWidth = v.isBoss ? 200 : 40;
+                            const barHeight = v.isBoss ? 10 : 4;
+                            ctx.fillStyle = '#333'; ctx.fillRect(v.x - barWidth / 2, v.y - (v.isBoss ? 100 : 30), barWidth, barHeight);
+                            ctx.fillStyle = '#F00'; ctx.fillRect(v.x - barWidth / 2, v.y - (v.isBoss ? 100 : 30), barWidth * (v.hp / v.maxHp), barHeight);
+                        }
+                    });
+
+                    ctx.shadowBlur = 0;
+                    ctx.font = "bold 24px 'JetBrains Mono', monospace";
+                    trailRef.current.forEach((p, i) => {
+                        const opacity = (1 - i / MAX_TRAIL) * 0.4;
+                        ctx.fillStyle = `rgba(34, 197, 94, ${opacity})`;
+                        ctx.shadowBlur = 5; ctx.shadowColor = '#0F0';
+                        ctx.fillText(coreText, p.x, p.y);
+                    });
+
+                    const pos = posRef.current;
+                    if (ultimateEffectRef.current.active) {
+                        ctx.save();
+                        ultimateEffectRef.current.lines.forEach(l => {
+                            ctx.font = "bold 24px 'JetBrains Mono', monospace";
+                            ctx.fillStyle = 'rgba(74, 222, 128, 0.9)';
+                            ctx.shadowBlur = 20; ctx.shadowColor = '#4ADE80';
+                            ctx.fillText(l.text, l.x, l.y);
+                        });
+                        ctx.restore();
+                    }
+
+                    const thrusterSize = 5 + Math.random() * 10 + (beatIntensity / 20);
+                    ctx.fillStyle = 'rgba(74, 222, 128, 0.5)';
+                    ctx.beginPath(); ctx.moveTo(pos.x - 10, pos.y + 10); ctx.lineTo(pos.x, pos.y + 10 + thrusterSize); ctx.lineTo(pos.x + 10, pos.y + 10); ctx.fill();
+                    ctx.fillStyle = '#4ADE80'; ctx.shadowBlur = 15; ctx.shadowColor = '#4ADE80';
+                    ctx.fillText(coreText, pos.x, pos.y);
+                    ctx.shadowBlur = 0;
+                };
+
+                const loop = () => { update(); draw(); requestAnimationFrame(loop); };
+                const animationId = requestAnimationFrame(loop);
+                return () => {
+                    window.removeEventListener('keydown', handleKeyDown);
+                    window.removeEventListener('keyup', handleKeyUp);
+                    window.removeEventListener('resize', handleResize);
+                    cancelAnimationFrame(animationId);
+                };
+            }, []);
+
+            return <canvas ref={canvasRef} className="fixed top-0 left-0 w-full h-full pointer-events-none z-20" />;
+        };
+
+        // --- Main App Component ---
+        const App = () => {
+            const [isShaking, setIsShaking] = useState(false);
+            const [isStarted, setIsStarted] = useState(false);
+            const [isMuted, setIsMuted] = useState(false);
+            const [level, setLevel] = useState(1);
+            const [score, setScore] = useState(0);
+            const [showResetNotify, setShowResetNotify] = useState(false);
+            const [trophies, setTrophies] = useState(0);
+            const [showTrophyAnim, setShowTrophyAnim] = useState(false);
+            const [firepower, setFirepower] = useState(1);
+            const [isBossActive, setIsBossActive] = useState(false);
+            const [ultimateCharges, setUltimateCharges] = useState(0);
+            
+            const scoreIntervalRef = useRef(null);
+            const lastUltimateScoreRef = useRef(0);
+
+            const levels = [
+                { name: "ALPHA", color: "#FF0000", speed: 1.0, threshold: 0 },
+                { name: "BETA", color: "#FF8800", speed: 1.3, threshold: 500 },
+                { name: "GAMMA", color: "#FFFF00", speed: 1.6, threshold: 1200 },
+                { name: "DELTA", color: "#FF00FF", speed: 2.0, threshold: 2200 },
+                { name: "EPSILON", color: "#00FFFF", speed: 2.5, threshold: 3500 },
+                { name: "OMEGA", color: "#FFFFFF", speed: 3.2, threshold: 5000 },
+            ];
+
+            const currentLevelData = levels[Math.min(level - 1, levels.length - 1)];
+
+            const handleCollision = useCallback(() => {
+                setIsShaking(true);
+                audioService.playCollision();
+                setScore(0);
+                lastUltimateScoreRef.current = 0;
+                setShowResetNotify(true);
+                setTimeout(() => setShowResetNotify(false), 2000);
+                setTimeout(() => setIsShaking(false), 500);
+            }, []);
+
+            const handleVirusDestroyed = useCallback((points) => {
+                setScore(prev => prev + points);
+                audioService.playVirusDestroyed();
+            }, []);
+
+            const handlePowerUpCollected = useCallback((newLevel) => {
+                setFirepower(newLevel);
+                audioService.playPowerUp();
+            }, []);
+
+            const startGame = () => {
+                setIsStarted(true);
+                setScore(0);
+                setLevel(1);
+                setTrophies(0);
+                setFirepower(1);
+                setUltimateCharges(0);
+                lastUltimateScoreRef.current = 0;
+                audioService.resume();
+
+                scoreIntervalRef.current = setInterval(() => {
+                    setScore(prev => {
+                        const newScore = prev + 10;
+                        if (newScore - lastUltimateScoreRef.current >= 3000) {
+                            setUltimateCharges(c => {
+                                const next = c + 1;
+                                console.log(`[DEBUG] Score: ${newScore} | Ultimate Charge Earned! Total: ${next}`);
+                                return next;
+                            });
+                            lastUltimateScoreRef.current += 3000;
+                        }
+                        const newTrophies = Math.floor(newScore / 10000);
+                        if (newTrophies > Math.floor(prev / 10000)) {
+                            setTrophies(newTrophies);
+                            setShowTrophyAnim(true);
+                            audioService.playTrophy();
+                            setTimeout(() => setShowTrophyAnim(false), 3000);
+                        }
+                        const nextLevel = levels.findIndex(l => l.threshold > newScore);
+                        if (nextLevel !== -1 && nextLevel > level) setLevel(nextLevel);
+                        else if (nextLevel === -1 && level < levels.length) setLevel(levels.length);
+                        return newScore;
+                    });
+                }, 100);
+            };
+
+            const toggleMute = () => {
+                const newMuted = !isMuted;
+                setIsMuted(newMuted);
+                audioService.setMuted(newMuted);
+            };
+
+            useEffect(() => {
+                return () => { if (scoreIntervalRef.current) clearInterval(scoreIntervalRef.current); };
+            }, []);
+
+            return (
+                <motion.div 
+                    className="relative min-h-screen w-full overflow-hidden bg-black"
+                    animate={isShaking ? { x: [0, -20, 20, -20, 20, 0], y: [0, 10, -10, 10, -10, 0] } : {}}
+                    transition={{ duration: 0.4 }}
+                >
+                    <MatrixRain isBossActive={isBossActive} />
+                    
+                    <AnimatePresence>
+                        {!isStarted && (
+                            <motion.div 
+                                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                                className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+                            >
+                                <div className="text-center p-8 border border-green-500/30 bg-black/40">
+                                    <h1 className="text-4xl md:text-6xl font-mono font-bold text-green-500 mb-8 drop-shadow-[0_0_15px_rgba(34,197,94,0.5)]">
+                                        MATRIX_STREAM_v1.0
+                                    </h1>
+                                    <div className="mb-8 text-green-400 font-mono text-sm space-y-2">
+                                        <p>ARROWS / WASD to move</p>
+                                        <p>ENTER to trigger ULTIMATE</p>
+                                        <p>SPACE to fire</p>
+                                        <p>Collect Arabic numbers for firepower</p>
+                                    </div>
+                                    <button 
+                                        onClick={startGame}
+                                        className="group relative px-8 py-4 bg-green-600 hover:bg-green-500 text-black font-mono font-bold text-xl transition-all flex items-center gap-3 mx-auto"
+                                    >
+                                        <Play size={24} fill="currentColor" />
+                                        INITIALIZE_LINK
+                                        <div className="absolute -inset-1 border border-green-400 opacity-0 group-hover:opacity-100 transition-opacity animate-pulse" />
+                                    </button>
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
+                    {isStarted && (
+                        <>
+                            <CoreCodePlayer 
+                                onCollision={handleCollision} onVirusDestroyed={handleVirusDestroyed} onPowerUpCollected={handlePowerUpCollected} onBossStatusChange={setIsBossActive}
+                                virusColor={currentLevelData.color} speedMultiplier={currentLevelData.speed} difficultyLevel={level} ultimateCharges={ultimateCharges}
+                                onUltimateUsed={() => setUltimateCharges(prev => Math.max(0, prev - 1))}
+                            />
+                            
+                            <div className="absolute top-8 left-1/2 -translate-x-1/2 z-10 text-center pointer-events-none w-full">
+                                <h1 className="text-2xl md:text-4xl font-mono font-bold text-green-500 mb-2 drop-shadow-[0_0_10px_rgba(34,197,94,0.8)]">
+                                    LEVEL {level}: {currentLevelData.name}
+                                </h1>
+                                <div className="flex flex-col items-center justify-center gap-2">
+                                    <div className="flex items-center justify-center gap-6">
+                                        <p className="text-green-400/60 font-mono text-xs md:text-sm tracking-[0.3em] uppercase">Score: {score.toString().padStart(6, '0')}</p>
+                                        <div className="flex items-center gap-2 text-yellow-500"><Trophy size={16} /><span className="font-mono text-sm">{trophies}</span></div>
+                                        <div className="flex items-center gap-2 text-blue-400"><span className="font-mono text-xs uppercase opacity-50">Power:</span><span className="font-mono text-sm">Lv.{firepower}</span></div>
+                                    </div>
+                                    <div className="flex flex-col items-center gap-1 mt-2">
+                                        <div className="flex items-center gap-4">
+                                            <span className="text-[10px] text-green-500 font-mono uppercase tracking-[0.2em] font-bold">ULTIMATE CHARGE</span>
+                                            <div className="flex gap-1">
+                                                {[...Array(ultimateCharges)].map((_, i) => (
+                                                    <motion.div key={i} initial={{ scale: 0 }} animate={{ scale: 1 }} className="w-5 h-5 bg-green-400 rounded-full border-2 border-white/40 shadow-[0_0_10px_rgba(74,222,128,1)]" />
+                                                ))}
+                                            </div>
+                                        </div>
+                                        <div className="w-80 h-3 bg-green-900/40 rounded-full overflow-hidden border border-green-500/40 relative">
+                                            <motion.div className="h-full bg-gradient-to-r from-green-600 to-green-400 shadow-[0_0_15px_rgba(34,197,94,0.8)]" animate={{ width: `${((score % 3000) / 3000) * 100}%` }} />
+                                            <div className="absolute inset-0 flex items-center justify-center"><span className="text-[10px] text-white font-mono font-bold drop-shadow-md">{Math.floor((score % 3000))} / 3000</span></div>
+                                        </div>
+                                        <span className="text-[10px] text-green-400 font-mono mt-1 animate-pulse font-bold tracking-widest">{ultimateCharges > 0 ? ">>> PRESS [ENTER] FOR CODE_STORM <<<" : "COLLECTING DATA..."}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button onClick={toggleMute} className="absolute top-8 right-8 z-30 p-3 border border-green-500/30 text-green-500 hover:bg-green-500/10 transition-colors">
+                                {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+                            </button>
+
+                            <AnimatePresence mode="wait">
+                                {ultimateCharges > 0 && (
+                                    <motion.div initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 50 }} className="absolute top-24 right-4 z-50 bg-green-500/30 border-2 border-green-400 px-8 py-4 backdrop-blur-md shadow-[0_0_30px_rgba(34,197,94,0.6)] rounded-lg">
+                                        <p className="text-green-300 font-mono text-2xl font-black animate-pulse tracking-tighter text-center">ULTIMATE READY</p>
+                                        <p className="text-green-400 font-mono text-center text-sm mt-1 font-bold">PRESS [ENTER] FOR CODE_STORM</p>
+                                    </motion.div>
+                                )}
+                                {showResetNotify && (
+                                    <motion.div key="reset" initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="absolute top-4 right-4 z-50 bg-red-600/80 border border-red-400 px-4 py-2 backdrop-blur-sm">
+                                        <p className="text-white font-mono text-sm font-bold flex items-center gap-2"><span className="animate-pulse">⚠️</span> 积分已重置 (SCORE_RESET)</p>
+                                    </motion.div>
+                                )}
+                                {showTrophyAnim && (
+                                    <motion.div key="trophy" initial={{ y: 100, opacity: 0, scale: 0.5 }} animate={{ y: 0, opacity: 1, scale: 1 }} exit={{ y: -100, opacity: 0, scale: 1.5 }} className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
+                                        <div className="bg-yellow-500/20 border-2 border-yellow-500 px-12 py-6 backdrop-blur-md text-center">
+                                            <Trophy size={64} className="text-yellow-500 mx-auto mb-4 animate-bounce" />
+                                            <h2 className="text-4xl md:text-6xl font-mono font-black text-yellow-500 drop-shadow-[0_0_20px_rgba(234,179,8,0.8)]">MILESTONE REACHED</h2>
+                                            <p className="text-yellow-400 font-mono mt-2 tracking-[0.5em] uppercase">+1 TROPHY EARNED</p>
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
+                            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 text-green-500/40 font-mono text-[10px] uppercase tracking-widest pointer-events-none flex gap-8">
+                                <span>[ Connection: Secure ]</span><span>[ Status: STABLE ]</span><span>[ Latency: 12ms ]</span><span style={{ color: currentLevelData.color }}>[ Stream: {currentLevelData.name} ]</span>
+                            </div>
+                        </>
+                    )}
+                </motion.div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
